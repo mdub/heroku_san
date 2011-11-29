@@ -56,7 +56,7 @@ namespace :heroku do
   desc "Creates the Heroku app"
   task :create do
     each_heroku_app do |name, app, repo|
-      sh "heroku create #{app}"
+      sh "heroku create #{app} #{("--stack " + stack(app)) if stack(app)}"
     end
   end
 
@@ -121,7 +121,7 @@ namespace :heroku do
   end
 
   namespace :apps do
-    desc 'Lists configured apps without hitting heroku'
+    desc 'Lists configured apps without hitting Heroku'
     task :local => :all do
       each_heroku_app do |name, app, repo|
         puts "#{name} is shorthand for the Heroku app #{app} located at:"
@@ -159,7 +159,7 @@ namespace :heroku do
     end
   end
 
-  desc 'Add config:vars to each application.'
+  desc 'Add config:vars to each application'
   task :config do
     require "shellwords"
     retrieve_configuration
@@ -197,7 +197,7 @@ namespace :heroku do
   desc 'Runs a rake task remotely'
   task :rake, :task do |t, args|
     each_heroku_app do |name, app, repo|
-      sh "heroku rake --app #{app} #{args[:task]}"
+      sh "heroku #{run_or_rake(app)} #{args[:task]}"
     end
   end
 
@@ -273,7 +273,11 @@ end
 desc "Opens a remote console"
 task :console do
   each_heroku_app do |name, app, repo|
-    sh "heroku console --app #{app}"
+    if stack_is_cedar?(app)
+      sh "heroku run --app #{app} console"
+    else
+      sh "heroku console --app #{app}"
+    end
   end
 end
 
@@ -321,7 +325,7 @@ namespace :db do
     end
   end
 
-  desc 'Push local database for Heroku database'
+  desc 'Push local database to Heroku database'
   task :push do
     dbconfig = YAML.load(ERB.new(File.read(Rails.root.join('config/database.yml'))).result)[Rails.env]
     return if dbconfig['adapter'] != 'postgresql'
@@ -354,7 +358,12 @@ def each_heroku_app
       app = @app_settings[name]['app']
       config = @app_settings[name]['config'] || {}
       config.merge!(@extra_config[name]) if (@extra_config && @extra_config[name])
-      yield(name, app, "git@heroku.com:#{app}.git", config)
+      if @app_settings[name].has_key? 'repo'
+        repo = @app_settings[name]['repo']
+      else
+        repo = "git@heroku.com:#{app}.git"
+      end
+      yield(name, app, repo, config)
     end
     puts
   else
@@ -382,10 +391,30 @@ def push(commit, repo)
 end
 
 def migrate(app)
-  sh "heroku rake --app #{app} db:migrate"
+  sh "heroku #{run_or_rake(app)} db:migrate"
   sh "heroku restart --app #{app}"
 end
 
 def maintenance(app, action)
   sh "heroku maintenance:#{action} --app #{app}"
+end
+
+# `heroku rake foo` has been superseded by `heroku run rake foo` on cedar
+def run_or_rake(app)
+  if stack_is_cedar?(app)
+    "run --app #{app} rake"
+  else
+    "rake --app #{app}"
+  end
+end
+
+def stack_is_cedar?(app)
+  stack(app) =~ /^cedar/
+end
+
+def stack(app)
+  @app_settings.values.detect { |s| s['app'] == app }.tap do |settings|
+    @stack = (settings['stack'] || (/^\* (.*)/.match `heroku stack --app #{app}`)[1] rescue nil)
+  end
+  @stack
 end
